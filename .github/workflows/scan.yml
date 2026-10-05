@@ -1,0 +1,46 @@
+name: build-and-scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [alpine, wolfi]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          docker build -f Dockerfile.${{ matrix.flavor }} \
+            -t lab:${{ matrix.flavor }} \
+            --build-arg VERSION=ci \
+            --build-arg COMMIT=${GITHUB_SHA::7} .
+
+      - name: Trivy scan
+        run: |
+          mkdir -p results "$HOME/.cache/trivy"
+          TRIVY="docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $HOME/.cache/trivy:/root/.cache/trivy \
+            -v $PWD/results:/results \
+            aquasec/trivy:latest"
+          F=${{ matrix.flavor }}
+          $TRIVY --version > results/trivy-version-$F.txt
+          $TRIVY image --severity HIGH,CRITICAL --format json  -o /results/$F.json lab:$F
+          $TRIVY image --skip-db-update --severity HIGH,CRITICAL --format table -o /results/$F.txt lab:$F
+          { echo "### Trivy: $F"; echo '```'; cat results/$F.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ matrix.flavor }}
+          path: results/
